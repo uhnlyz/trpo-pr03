@@ -1,17 +1,206 @@
 "use strict";
-let dashboard=null, notifications=[], records=[];
-const $=id=>document.getElementById(id);
-const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function toast(title,message){$('toastTitle').textContent=title;$('toastMessage').textContent=message;bootstrap.Toast.getOrCreateInstance($('saveToast')).show();}
-function renderMetrics(){$('metricCards').innerHTML=dashboard.metrics.map(m=>'<article class="col-12 col-md-6 col-xl-3"><div class="metric-card"><div class="metric-accent"></div><p class="text-secondary mb-2">'+esc(m.title)+'</p><strong class="metric-value">'+esc(m.value)+esc(m.unit||'')+'</strong><p class="small text-secondary mt-3 mb-0">'+esc(m.detail||'')+'</p></div></article>').join('');}
-function renderActivities(){$('recordCount').textContent=records.length+' записей';$('activityRows').innerHTML=records.length?records.map(item=>'<tr><td class="fw-semibold">'+esc(item.title)+'</td><td>'+esc(item.area)+'</td><td><span class="badge '+(item.status==='Готово'?'text-bg-success':'text-bg-warning')+'">'+esc(item.status)+'</span></td><td class="text-secondary">'+esc(item.date)+'</td></tr>').join(''):'<tr><td colspan="4">Записей пока нет</td></tr>';}
-function updateProgress(){const done=dashboard.tasks.filter(t=>t.done).length;const percent=dashboard.tasks.length?Math.round(done*100/dashboard.tasks.length):0;$('taskProgress').style.width=percent+'%';$('taskPercent').textContent=percent+'%';$('taskProgress').parentElement.setAttribute('aria-valuenow',percent);}
-function renderTasks(){$('taskItems').innerHTML=dashboard.tasks.map((task,i)=>'<div class="form-check"><input class="form-check-input task-check" type="checkbox" data-index="'+i+'" id="task-'+esc(task.id)+'" '+(task.done?'checked':'')+'><label class="form-check-label '+(task.done?'task-done':'')+'" for="task-'+esc(task.id)+'">'+esc(task.title)+'</label></div>').join('');updateProgress();}
-async function loadData(){const [r1,r2]=await Promise.all([fetch('dataset/dashboard.json'),fetch('dataset/notifications.json')]);if(!r1.ok||!r2.ok)throw Error('Не удалось загрузить файлы JSON');dashboard=await r1.json();const notes=await r2.json();notifications=Array.isArray(notes)?notes:notes.notifications||[];if(!Array.isArray(dashboard.metrics)||dashboard.metrics.length<4)throw Error('В JSON требуется 4 показателя');dashboard.tasks=dashboard.tasks||[];records=[...(dashboard.activities||[])];renderMetrics();renderActivities();renderTasks();$('dataStatus').textContent='Данные загружены';}
-function validate(input){const good=input.checkValidity()&&(input.id!=='recordTitle'||input.value.trim().length>=3);input.classList.toggle('is-invalid',!good);input.classList.toggle('is-valid',good);return good;}
-$('recordForm').addEventListener('submit',event=>{event.preventDefault();const controls=[$('recordTitle'),$('recordArea'),$('recordEmail')];if(!controls.map(validate).every(Boolean))return;records.unshift({id:'local-'+Date.now(),title:$('recordTitle').value.trim(),area:$('recordArea').value,status:$('recordStatus').value,date:new Date().toLocaleDateString('ru-RU')});renderActivities();bootstrap.Modal.getOrCreateInstance($('newRecordModal')).hide();$('recordForm').reset();controls.forEach(c=>c.classList.remove('is-invalid','is-valid'));const n=notifications[0]||{title:'Готово',message:'Запись добавлена'};toast(n.title,n.message);});
-['recordTitle','recordArea','recordEmail'].forEach(id=>$(id).addEventListener('input',event=>{const element=event.target;if(element.classList.contains('is-invalid')||element.classList.contains('is-valid'))validate(element);}));
-$('taskItems').addEventListener('change',event=>{if(!dashboard||!event.target.matches('.task-check'))return;const i=Number(event.target.dataset.index);dashboard.tasks[i].done=event.target.checked;event.target.nextElementSibling.classList.toggle('task-done',event.target.checked);updateProgress();});
-$('notificationButton').addEventListener('click',()=>{const n=notifications[1]||notifications[0]||{title:'Информация',message:'Уведомление'};toast(n.title,n.message);});
-$('refreshButton').addEventListener('click',async()=>{try{await loadData();toast('Обновлено','Данные снова загружены из JSON');}catch(error){toast('Ошибка',error.message);}});
-loadData().catch(error=>{$('dataStatus').textContent='Ошибка данных';$('metricCards').innerHTML='<div class="col-12"><div class="alert alert-warning">Не удалось загрузить JSON. Запустите сайт через локальный сервер по README.</div></div>';$('activityRows').innerHTML='<tr><td colspan="4">Ошибка загрузки</td></tr>';console.error(error);});
+
+let dashboard = null;
+let notifications = [];
+let records = [];
+
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+
+function showToast(title, message) {
+  $("toastTitle").textContent = title;
+  $("toastMessage").textContent = message;
+  bootstrap.Toast.getOrCreateInstance($("saveToast")).show();
+}
+
+function showDatasetNotification(notification) {
+  if (!notification) {
+    showToast("Уведомление", "Действие выполнено.");
+    return;
+  }
+
+  const titles = {
+    success: "Успешно",
+    warning: "Внимание",
+    info: "Информация",
+    danger: "Ошибка"
+  };
+
+  showToast(titles[notification.type] || "Уведомление", notification.text);
+}
+
+function statusBadgeClass(status) {
+  if (status === "Готово") return "text-bg-success";
+  if (status === "В работе") return "text-bg-warning";
+  if (status === "Новая") return "text-bg-info";
+  return "text-bg-secondary";
+}
+
+function renderMetrics() {
+  $("metricCards").innerHTML = dashboard.metrics.map((metric) => `
+    <article class="col-12 col-md-6 col-xl-3">
+      <div class="metric-card">
+        <div class="metric-accent"></div>
+        <p class="text-secondary mb-2">${escapeHtml(metric.title)}</p>
+        <strong class="metric-value">${escapeHtml(metric.value)}</strong>
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderRows() {
+  $("recordCount").textContent = `${records.length} записей`;
+
+  if (records.length === 0) {
+    $("activityRows").innerHTML = '<tr><td colspan="3" class="text-secondary">Записей пока нет.</td></tr>';
+    return;
+  }
+
+  $("activityRows").innerHTML = records.map((record) => {
+    const status = record.status || "Не указан";
+    return `
+      <tr>
+        <td>${escapeHtml(record.id)}</td>
+        <td class="fw-semibold">${escapeHtml(record.action)}</td>
+        <td><span class="badge ${statusBadgeClass(status)}">${escapeHtml(status)}</span></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function renderStatusSummary() {
+  const counts = {};
+  records.forEach((record) => {
+    const status = record.status || "Не указан";
+    counts[status] = (counts[status] || 0) + 1;
+  });
+
+  const statusNames = Object.keys(counts);
+  $("taskItems").innerHTML = statusNames.length
+    ? statusNames.map((status) => `
+        <div class="d-flex align-items-center justify-content-between gap-3">
+          <span>${escapeHtml(status)}</span>
+          <span class="badge ${statusBadgeClass(status)}">${counts[status]}</span>
+        </div>
+      `).join("")
+    : '<p class="small text-secondary mb-0">Нет данных для сводки.</p>';
+
+  const completed = records.filter((record) => record.status === "Готово").length;
+  const percent = records.length ? Math.round(completed * 100 / records.length) : 0;
+  $("taskProgress").style.width = percent + "%";
+  $("taskProgress").parentElement.setAttribute("aria-valuenow", percent);
+  $("taskPercent").textContent = `${completed} из ${records.length}`;
+}
+
+async function loadData() {
+  const responses = await Promise.all([
+    fetch("dataset/dashboard.json"),
+    fetch("dataset/notifications.json")
+  ]);
+
+  if (responses.some((response) => !response.ok)) {
+    throw new Error("Не удалось загрузить файлы dataset.");
+  }
+
+  const loadedDashboard = await responses[0].json();
+  const loadedNotifications = await responses[1].json();
+
+  if (!Array.isArray(loadedDashboard.metrics) || loadedDashboard.metrics.length < 4) {
+    throw new Error("В dashboard.json должно быть не менее четырёх показателей.");
+  }
+  if (!Array.isArray(loadedDashboard.rows)) {
+    throw new Error("В dashboard.json отсутствует массив rows.");
+  }
+  if (!Array.isArray(loadedNotifications)) {
+    throw new Error("В notifications.json ожидался массив уведомлений.");
+  }
+
+  dashboard = loadedDashboard;
+  notifications = loadedNotifications;
+  records = [...dashboard.rows];
+
+  renderMetrics();
+  renderRows();
+  renderStatusSummary();
+  $("dataStatus").textContent = "Данные загружены";
+}
+
+function validateField(input) {
+  const valueIsLongEnough = input.id !== "recordTitle" || input.value.trim().length >= 3;
+  const valid = input.checkValidity() && valueIsLongEnough;
+  input.classList.toggle("is-invalid", !valid);
+  input.classList.toggle("is-valid", valid);
+  return valid;
+}
+
+$("recordForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+
+  const fields = [$("recordTitle"), $("recordEmail"), $("recordStatus")];
+  if (!fields.map(validateField).every(Boolean)) return;
+
+  records.unshift({
+    id: "new-" + Date.now(),
+    action: $("recordTitle").value.trim(),
+    status: $("recordStatus").value
+  });
+
+  renderRows();
+  renderStatusSummary();
+  bootstrap.Modal.getOrCreateInstance($("newRecordModal")).hide();
+
+  $("recordForm").reset();
+  fields.forEach((field) => field.classList.remove("is-valid", "is-invalid"));
+
+  const successNotification = notifications.find((item) => item.type === "success");
+  showDatasetNotification(successNotification);
+});
+
+["recordTitle", "recordEmail", "recordStatus"].forEach((id) => {
+  const field = $(id);
+  field.addEventListener("input", () => {
+    if (field.classList.contains("is-invalid") || field.classList.contains("is-valid")) {
+      validateField(field);
+    }
+  });
+  field.addEventListener("change", () => {
+    if (field.classList.contains("is-invalid") || field.classList.contains("is-valid")) {
+      validateField(field);
+    }
+  });
+});
+
+$("notificationButton").addEventListener("click", () => {
+  const warningNotification = notifications.find((item) => item.type === "warning");
+  showDatasetNotification(warningNotification || notifications[0]);
+});
+
+$("refreshButton").addEventListener("click", async () => {
+  try {
+    await loadData();
+    showToast("Обновлено", "Данные повторно загружены из JSON.");
+  } catch (error) {
+    showToast("Ошибка", error.message);
+    console.error(error);
+  }
+});
+
+loadData().catch((error) => {
+  $("dataStatus").textContent = "Ошибка данных";
+  $("metricCards").innerHTML = `
+    <div class="col-12">
+      <div class="alert alert-warning mb-0">${escapeHtml(error.message)} Запустите страницу через локальный сервер, как указано в README.</div>
+    </div>`;
+  $("activityRows").innerHTML = '<tr><td colspan="3">Ошибка загрузки данных.</td></tr>';
+  $("taskItems").innerHTML = '<p class="text-secondary small mb-0">Сводка недоступна.</p>';
+  console.error(error);
+});
